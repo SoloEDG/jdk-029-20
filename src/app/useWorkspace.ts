@@ -4,6 +4,7 @@ import { useLyrics } from '../features/lyrics'
 import { useCapture } from '../features/capture'
 import { usePitch } from '../features/pitch'
 import { useReview } from '../features/review'
+import { useRevision, revisePitch } from '../features/revision'
 import type { Song, Take } from '../shared/document'
 
 export function useWorkspace() {
@@ -16,6 +17,7 @@ export function useWorkspace() {
     capture.cancelRequest()
     transport.pause()
   })
+  const revision = useRevision()
   const capture = useCapture({
     onFrame: pitch.receive,
     position: transport.read,
@@ -25,13 +27,17 @@ export function useWorkspace() {
       })
     },
   })
+  const editing = review.editing
   const graphRange = computed(() => {
+    if (editing.value) return { start: editing.value.start, end: editing.value.end }
     if (review.position.value !== null || !transport.isPlaying.value || capture.status.value === 'recording') {
       return lyrics.selected.value ?? { start: 0, end: transport.song.value.duration }
     }
     return lyrics.active.value ?? lyrics.upcoming.value ?? lyrics.selected.value!
   })
   const graphPosition = computed(() => review.position.value ?? transport.position.value)
+  const editedResult = computed(() => (editing.value?.revision ? revisePitch(editing.value.pitch, editing.value.revision) : null))
+  const disputeCount = computed(() => editedResult.value?.disputes.length ?? 0)
 
   function finishCapture(position: number): void { void capture.stop(position) }
 
@@ -105,6 +111,34 @@ export function useWorkspace() {
 
   function listen(take: Take) { void review.listen(take) }
 
+  function startEdit(take: Take) {
+    review.startEditing(take)
+    revision.cancelDrag()
+  }
+
+  function onCanvasPress(take: Take, time: number) {
+    const action = revision.handlePress(take, time)
+    if (action?.type === 'lock') {
+      review.addLock(take.id, {
+        id: crypto.randomUUID(), time: action.time, midi: action.midi, createdAt: Date.now(),
+      })
+    }
+  }
+
+  function onCanvasDrag(time: number) {
+    revision.handleDrag(time)
+  }
+
+  function onCanvasRelease(take: Take) {
+    const action = revision.handleRelease()
+    if (action?.type === 'shift') {
+      review.addShift(take.id, {
+        id: crypto.randomUUID(), start: action.range.start, end: action.range.end,
+        direction: action.direction, createdAt: Date.now(),
+      })
+    }
+  }
+
   watch(transport.position, position => {
     const line = lyrics.selected.value
     if (line && position >= line.end) finishCapture(line.end)
@@ -120,6 +154,8 @@ export function useWorkspace() {
 
   return {
     transport, lyrics, pitch, review, capture, graphRange, graphPosition,
+    revision, editing, editedResult, disputeCount,
     selectLine, adjacent, selectSong, seek, toggleLoop, togglePlay, toggleRecording, listen,
+    startEdit, onCanvasPress, onCanvasDrag, onCanvasRelease,
   }
 }
